@@ -1,0 +1,121 @@
+---
+title: Usage
+description: Commands, flags and exit codes for sync.py and setup_mirrors.py.
+---
+
+## `sync.py`
+
+The main entry point. With no arguments it reads `config.yaml` and syncs whatever that file
+describes.
+
+```bash
+# Sync the pairs from config.yaml
+python sync.py
+
+# Show what would happen, change nothing
+python sync.py --dry-run
+
+# Discover and pair everything in a namespace
+python sync.py --sync-all --gitlab-owner my-group --github-owner my-org
+
+# ... and create whatever is missing on the other side
+python sync.py --sync-all --gitlab-owner my-group --github-owner my-org --create-missing
+
+# A single pair, ignoring the configured list
+python sync.py -r "my-group/project:my-org/project"
+
+# DEBUG logging with an alternative config file
+python sync.py -v -c config.staging.yaml
+```
+
+### Flags
+
+| Flag | Description |
+| --- | --- |
+| `-c`, `--config PATH` | Configuration file (default `config.yaml`) |
+| `-d`, `--dry-run` | Log intended changes without applying them |
+| `-v`, `--verbose` | Enable DEBUG logging |
+| `-r`, `--repo GITLAB:GITHUB` | Sync exactly one pair. The separator is a colon |
+| `--sync-all` | Auto-discover repositories and pair them by name |
+| `--gitlab-owner NAME` | GitLab group or user namespace to enumerate |
+| `--github-owner NAME` | GitHub user or organization to enumerate |
+| `--create-missing` | Create the counterpart repository when one side is missing |
+
+`-r/--repo` is only honoured in the explicit-list mode. If `sync_all` is active — via the
+flag or via `config.yaml` — discovery runs and `-r` is ignored.
+
+### Outcomes and exit code
+
+Every pair ends in one of three states:
+
+| State | Meaning |
+| --- | --- |
+| **success** | At least one enabled area synced |
+| **skipped** | A repository was not found or not accessible on one side |
+| **error** | An area raised, or no area completed |
+
+The summary line names the counts, and the process exits `1` if there was at least one error,
+`0` otherwise. Skips do not fail the run — a missing counterpart repository is a normal
+condition when `create_missing` is off.
+
+### Dry run
+
+`--dry-run` is threaded through the whole engine and is the right first command against a new
+configuration. In dry-run mode the tool still **reads** from both platforms (it has to, to
+determine what it would do), but writes nothing: no metadata edits, no mirrors, no issues, no
+MRs/PRs.
+
+## `setup_mirrors.py`
+
+`sync.py` already configures mirrors as part of code sync. This script exists to do only
+that, and to generate a GitHub Actions workflow as an alternative when GitLab pull mirroring
+is unavailable.
+
+```bash
+# Both directions, for every pair in config.yaml
+python setup_mirrors.py
+
+# One direction only
+python setup_mirrors.py --direction push     # GitLab -> GitHub
+python setup_mirrors.py --direction pull     # GitHub -> GitLab
+
+# A single pair
+python setup_mirrors.py --repo "my-group/project:my-org/project"
+
+# Instead of a mirror: write .github/workflows/sync-to-gitlab.yml
+python setup_mirrors.py --github-action --repo "my-group/project:my-org/project"
+```
+
+### Flags
+
+| Flag | Description |
+| --- | --- |
+| `-c`, `--config PATH` | Configuration file (default `config.yaml`) |
+| `--direction {push,pull,bidirectional}` | Which mirror(s) to configure (default `bidirectional`) |
+| `--repo GITLAB:GITHUB` | Operate on a single pair instead of the config file |
+| `--github-token TOKEN` | GitHub token for the mirror URL; falls back to `gh auth token` |
+| `--gitlab-token TOKEN` | GitLab token; only relevant for the generated workflow |
+| `--github-action` | Write a GitHub Actions workflow instead of configuring a mirror |
+
+Without `--repo`, this script reads the explicit `repositories` list from the config file. It
+does **not** implement discovery — `sync_all` has no effect here.
+
+:::note
+`--github-token` and `--gitlab-token` end up in your shell history and in the process list.
+Prefer `GH_TOKEN` / `GITLAB_TOKEN` in the environment and let the CLIs pick them up.
+:::
+
+## Interpreting the log
+
+Log lines are prefixed `timestamp - module - LEVEL - message`. Useful markers:
+
+| Line | Meaning |
+| --- | --- |
+| `✓ Matched: <gitlab> <-> <github>` | Discovery paired two existing repositories |
+| `→ Mapping created ...` | A pair was recorded although one side is missing; it will be skipped or created |
+| `Push mirror already configured` | GitLab rejected a duplicate mirror — the desired state already holds |
+| `Pull mirroring is unavailable ...` | The GitLab tier has no pull mirroring; code syncs one way only |
+| `No sync operations completed for <pair>` | Every enabled area failed or returned nothing |
+
+When the progress bar is active, log records are written through `tqdm.write()`, so ordinary
+output and the bar coexist without the bar being redrawn over text.

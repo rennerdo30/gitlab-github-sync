@@ -1,0 +1,62 @@
+---
+title: gitlab-github-sync
+description: Bidirectional mirroring of repositories, issues and merge requests between GitLab and GitHub, driven by the gh and glab CLIs.
+---
+
+A Python CLI that keeps repositories on **GitLab** and **GitHub** in sync — metadata, code,
+issues and merge requests / pull requests — by driving the official vendor CLIs
+(`glab`, `gh`) and GitLab's remote mirroring APIs.
+
+## Why this exists
+
+GitLab can mirror code to GitHub natively, and that solves exactly one part of the problem.
+Nothing carries the repository description, the topics, the issues or the merge requests
+across. Writing that against both REST APIs directly means dealing with two authentication
+schemes, two pagination models and two JSON shapes.
+
+This tool sidesteps all of it by shelling out to the CLIs that already solve authentication.
+If `gh repo list` and `glab repo list` work on your machine, the tool works — there is no
+token to put in a config file and no API client to keep current.
+
+## What gets synchronized
+
+| Area | Direction | Mechanism |
+| --- | --- | --- |
+| Metadata — description, homepage URL, topics/tags | both ways | `gh repo edit` / `glab repo update` |
+| Code — branches, tags, commits | both ways | GitLab remote mirrors, configured via `glab api` |
+| Issues | both ways | `gh issue create/edit` / `glab issue create/update` |
+| Merge requests ↔ pull requests | both ways | `gh pr create/edit` / `glab mr create/update` |
+
+## Features
+
+- **Auto-discovery** — `--sync-all` lists repositories on both platforms and pairs them by
+  repository name, independent of namespace.
+- **Counterpart creation** — `--create-missing` creates the repository on the side where it
+  does not exist yet, copying the description across.
+- **Blacklist** — `fnmatch` patterns such as `group/*-scratch` exclude repositories from
+  discovery and from the final sync list.
+- **Idempotent state** — `.sync_state.json` stores last-sync timestamps per pair plus the
+  issue and MR/PR number mappings, so a second run updates instead of duplicating.
+- **Dry run** — `--dry-run` logs every intended change and performs none.
+- **Readable output** — a `tqdm` progress bar over repository pairs, with a logging handler
+  that routes records through `tqdm.write()` so the bar never gets corrupted.
+
+## What it does not do
+
+Being explicit about this is more useful than a feature list:
+
+- Comments on issues and MRs/PRs are **not** synchronized — only title, body and state.
+- Nothing is ever deleted. Closing propagates; deletion does not.
+- A new MR/PR needs its branches to already exist on the target side, so code sync has to
+  have run first.
+- Pull mirroring (GitHub → GitLab code) requires **GitLab Premium or higher**. On lower
+  tiers only the GitLab → GitHub direction is configured.
+- Metadata sync is last-writer-wins, with no conflict detection.
+- The project ships no automated tests.
+
+## Next steps
+
+- [Installation](/gitlab-github-sync/getting-started/installation/) — prerequisites and setup
+- [Configuration](/gitlab-github-sync/getting-started/configuration/) — every option explained
+- [Usage](/gitlab-github-sync/guides/usage/) — commands and flags
+- [Architecture](/gitlab-github-sync/guides/architecture/) — how the modules fit together

@@ -1,0 +1,15 @@
+{
+  "name": "gitlab-github-sync-docs",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Documentation site for gitlab-github-sync (Astro Starlight, Galaxy theme)",
+  "scripts": {
+    "dev": "cd docs && npm run dev",
+    "build": "cd docs && npm run build",
+    "preview": "cd docs && npm run preview",
+    "install:docs": "cd docs && npm install"
+  },
+  "keywords": ["gitlab", "github", "mirror", "sync", "documentation", "astro", "starlight"],
+  "author": "rennerdo30",
+  "license": "MIT"
+}

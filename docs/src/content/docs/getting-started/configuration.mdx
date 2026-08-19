@@ -1,0 +1,163 @@
+---
+title: Configuration
+description: Every option in config.yaml, the environment variables used for credentials, and how CLI flags override the file.
+---
+
+Configuration lives in a YAML file — `config.yaml` by default, overridable with
+`-c/--config`. Start from the shipped example:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+`config.yaml` is git-ignored, because it usually names private repositories. It contains
+**no credentials**; those come from the `gh` and `glab` CLIs.
+
+## Full example
+
+```yaml
+state_file: .sync_state.json
+work_dir: .sync_work
+
+sync_mode:
+  sync_all: true
+  gitlab_owner: my-group
+  github_owner: my-org
+  create_missing: false
+
+blacklist:
+  gitlab:
+    - "my-group/*-scratch"
+  github:
+    - "my-org/mirror-of-*"
+
+sync_options:
+  metadata: true
+  code: true
+  issues: true
+  mrs: true
+  use_native_mirrors: true
+
+repositories:
+  - gitlab: "my-group/project"
+    github: "my-org/project"
+```
+
+## Options
+
+### Top level
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `state_file` | `.sync_state.json` | Path to the JSON file holding timestamps and number mappings |
+| `work_dir` | `.sync_work` | Scratch directory, created at start-up |
+
+### `sync_mode`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `sync_all` | `false` | Discover repositories on both platforms and pair them by name, instead of using `repositories` |
+| `gitlab_owner` | `null` | GitLab group or user namespace to enumerate. `null` means the authenticated user's own projects |
+| `github_owner` | `null` | GitHub user or organization to enumerate. `null` means the authenticated user's own repositories |
+| `create_missing` | `false` | Create the counterpart repository when only one side exists |
+
+`gitlab_owner` is resolved leniently: it is tried as a group first, and if GitLab reports no
+matching group, it is retried as a user namespace.
+
+`create_missing` requires at least one of `gitlab_owner` / `github_owner` — the tool needs a
+namespace to create into and exits with an error otherwise. New repositories inherit the
+description from the source side. Visibility is chosen conservatively: repositories created
+on GitLab from a GitHub source are created **private**, because `gh repo view` does not
+report visibility in the fields the tool requests.
+
+### `sync_options`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `metadata` | `true` | Sync description, homepage URL and topics/tags |
+| `code` | `true` | Configure GitLab remote mirrors for the pair |
+| `issues` | `true` | Sync issues |
+| `mrs` | `true` | Sync merge requests ↔ pull requests |
+| `use_native_mirrors` | `true` | Must stay `true` for code sync; when `false`, code sync logs a warning and is skipped entirely |
+
+There is no non-mirror fallback for code. `use_native_mirrors: false` means "do not sync
+code", not "sync code some other way".
+
+### `blacklist`
+
+Two lists of patterns, `gitlab` and `github`. Both are matched with
+[`fnmatch`](https://docs.python.org/3/library/fnmatch.html) against the full repository path,
+so shell-style wildcards work:
+
+```yaml
+blacklist:
+  gitlab:
+    - "my-group/gitlab-ce"      # exact path
+    - "my-group/*-test"         # every project ending in -test
+```
+
+Patterns from **both** lists are checked against **both** platforms' paths, so a pattern only
+needs to appear once to exclude a pair. Blacklisting is applied twice: during discovery, and
+again to the final list before syncing — so it also filters explicit `repositories` entries.
+
+### `repositories`
+
+Only consulted when `sync_mode.sync_all` is `false`. Each entry needs both keys:
+
+```yaml
+repositories:
+  - gitlab: "my-group/project"
+    github: "my-org/project"
+```
+
+Validation rejects the file if `repositories` is missing, is not a list, or contains an entry
+without both `gitlab` and `github`.
+
+### `schedule`
+
+Present in the example file for documentation purposes only. The tool does not read it and
+never schedules itself — use cron, a systemd timer, or CI.
+
+## CLI overrides
+
+Command-line flags win over the file. Each of these overrides its `sync_mode` counterpart:
+
+| Flag | Overrides |
+| --- | --- |
+| `--sync-all` | `sync_mode.sync_all` |
+| `--gitlab-owner NAME` | `sync_mode.gitlab_owner` |
+| `--github-owner NAME` | `sync_mode.github_owner` |
+| `--create-missing` | `sync_mode.create_missing` |
+
+The overrides are one-way: a flag can enable a setting, but there is no flag to turn one off
+again once it is `true` in the file.
+
+## Credentials
+
+| Variable | Consumed by | Required scope |
+| --- | --- | --- |
+| `GH_TOKEN` (or `GITHUB_TOKEN`) | `gh` | `repo` |
+| `GITLAB_TOKEN` | `glab` | `api` |
+
+These are read by the vendor CLIs, not by this project. Additionally, `setup_mirrors.py`
+accepts `--github-token` and `--gitlab-token` on the command line; prefer the environment
+variables, since command-line arguments are visible in the process list.
+
+To build the mirror URL, the tool calls `gh auth token` and embeds the result in the remote
+URL handed to GitLab — that is how GitLab authenticates against GitHub. The consequences are
+covered in [Mirroring & Scheduling](/gitlab-github-sync/guides/mirroring/).
+
+## State file
+
+`.sync_state.json` is written by `state_manager.py` and holds, per `gitlab_repo:github_repo`
+pair:
+
+- `last_sync` plus one timestamp per area (`last_metadata_sync`, `last_code_sync`,
+  `last_issues_sync`, `last_mrs_sync`)
+- `issue_mappings` and `mr_mappings` as `gitlab:<n>` / `github:<n>` keys pointing at the
+  counterpart number
+
+A present mapping means *update*; an absent one means *create*. Deleting the file therefore
+causes duplicates on the next run, since the two platforms number resources independently.
+The file also lists the full path of every private repository processed, which is why it is
+git-ignored.

@@ -1,0 +1,113 @@
+---
+title: Mirroring & Scheduling
+description: How code mirroring is configured, the GitHub Actions fallback, running the tool on a schedule, and the security implications of the mirror token.
+---
+
+## Two directions, two mechanisms
+
+Code synchronization is delegated entirely to GitLab. GitLab treats the two directions as
+separate features with separate APIs and separate tier requirements:
+
+| Direction | GitLab feature | Endpoint | Tier |
+| --- | --- | --- | --- |
+| GitLab → GitHub | Push mirror | `POST projects/:id/remote_mirrors` | Free and up |
+| GitHub → GitLab | Pull mirror | `PUT projects/:id/mirror/pull` | Premium and up |
+
+A GitLab project can have at most **10 enabled push mirrors**, and exactly one pull mirror.
+
+If pull mirroring is unavailable, `sync.py` logs a warning and keeps going — code then flows
+GitLab → GitHub only, while metadata, issues and MRs/PRs still sync both ways.
+
+## Configuring mirrors
+
+Usually nothing extra is needed: `sync.py` configures the mirrors as part of code sync, and
+re-running is harmless because both calls are idempotent.
+
+To do only the mirror setup:
+
+```bash
+python setup_mirrors.py                                     # both directions, all configured pairs
+python setup_mirrors.py --direction push                    # GitLab -> GitHub only
+python setup_mirrors.py --repo "my-group/project:my-org/project"
+```
+
+`setup_mirrors.py` goes through `glab repo mirror`, which picks the right endpoint for the
+requested `--direction`. Unlike `sync.py`, it reads only the explicit `repositories` list —
+it has no discovery mode.
+
+## Fallback: a GitHub Actions workflow
+
+Without Premium there is no pull mirror, so the GitHub → GitLab direction has to be pushed
+from GitHub's side:
+
+```bash
+python setup_mirrors.py --github-action --repo "my-group/project:my-org/project"
+```
+
+This writes `.github/workflows/sync-to-gitlab.yml` **into the current directory** — it is not
+committed and not pushed. The generated workflow runs on every branch and tag push plus
+`workflow_dispatch`, checks out with full history, and force-pushes all branches and tags to
+`https://oauth2:$GITLAB_TOKEN@gitlab.com/<gitlab-path>.git`.
+
+To activate it:
+
+1. Add a `GITLAB_TOKEN` repository secret with `api` scope.
+2. Commit and push the workflow file into the repository you want mirrored.
+
+:::caution[This force-pushes]
+The workflow uses `git push --force` for branches and tags. GitLab is the destination and its
+history is overwritten to match GitHub. Do not enable this in the same direction as an
+existing push mirror, or the two will fight over the same refs.
+:::
+
+## Scheduling
+
+Code needs no schedule once the mirrors exist — GitLab handles it. Metadata, issues and
+MRs/PRs do:
+
+```cron
+0 */6 * * * cd /path/to/gitlab-github-sync && ./venv/bin/python sync.py >> sync.log 2>&1
+```
+
+`run.sh` is a thin wrapper that activates `venv/` and runs `python sync.py`, useful as a cron
+target. In cron there is no interactive keyring, so export `GH_TOKEN` and `GITLAB_TOKEN` (see
+[Installation](/gitlab-github-sync/getting-started/installation/)) or make sure the CLI
+credential store is readable by the cron user.
+
+The exit code is `1` when at least one pair errored, which makes the run usable as a monitored
+job.
+
+## Security: the token in the mirror URL
+
+GitLab needs credentials to reach GitHub, and it takes them from the remote URL. So the tool
+calls `gh auth token` and builds `https://<token>@github.com/<owner>/<repo>.git`, which it
+passes to the GitLab API.
+
+That has three consequences worth being deliberate about:
+
+- **The token appears in a command line.** It is an argument to `glab api`, so it is visible
+  in the process list to anyone who can run `ps` on that machine. Do not run this on a shared
+  host.
+- **The token can reach your logs.** `cli_wrapper.run_command()` logs the full command line at
+  DEBUG level. Running with `--verbose` while redirecting into `sync.log` can therefore write
+  the token into that file. Treat `sync.log` as a secret — it is git-ignored for that reason —
+  or avoid `--verbose` for scheduled runs.
+- **GitLab stores the credential.** Rotating or revoking the GitHub token breaks the mirror
+  silently on GitLab's side; the mirror has to be reconfigured afterwards.
+
+Use a token scoped to `repo` and nothing more, and prefer a short-lived or fine-grained one
+limited to the repositories you actually mirror.
+
+`.sync_state.json` deserves similar care: it lists the full path of every repository the tool
+has processed, private ones included. It is git-ignored.
+
+## Troubleshooting
+
+| Symptom | Cause and remedy |
+| --- | --- |
+| `Could not get GitHub token` | `gh` is not authenticated. Run `gh auth login`, or export `GH_TOKEN` |
+| `Failed to get GitLab project ID` | The path is wrong, or the token lacks `api` scope on that project |
+| `Pull mirroring is unavailable` | The GitLab tier has no pull mirroring. Use the GitHub Actions fallback |
+| `Push mirror already configured` | Not an error — the desired state already holds |
+| Duplicate issues after a re-run | `.sync_state.json` was deleted or lost; the mappings went with it |
+| Nothing is discovered | Everything is blacklisted, or no repository names match. Run with `--verbose` to see the candidate lists |

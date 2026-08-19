@@ -1,0 +1,91 @@
+---
+title: Installation
+description: Prerequisites, virtual environment setup and CLI authentication for gitlab-github-sync.
+---
+
+## Prerequisites
+
+| Requirement | Why |
+| --- | --- |
+| Python 3.9 or newer | The tool itself |
+| [`gh`](https://cli.github.com/manual/installation) | Every GitHub operation goes through it |
+| [`glab`](https://gitlab.com/gitlab-org/cli#installation) | Every GitLab operation goes through it |
+
+Both CLIs must be on `PATH` and authenticated. The tool never talks to either REST API
+directly, so if a CLI is missing, the corresponding half simply fails.
+
+Python dependencies (`requirements.txt`):
+
+- `PyYAML` — reads `config.yaml`
+- `tqdm` — progress bar; the code degrades gracefully to no progress bar if it is absent
+
+## Install
+
+```bash
+git clone https://github.com/rennerdo30/gitlab-github-sync.git
+cd gitlab-github-sync
+
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+## Authenticate the CLIs
+
+Interactively, once per machine:
+
+```bash
+gh auth login
+glab auth login
+```
+
+For a self-managed GitLab instance, point `glab` at it during login (or set
+`glab config set -g host gitlab.example.com`).
+
+### Non-interactive environments
+
+In CI or a cron job without a keyring, both CLIs read tokens from the environment:
+
+| Variable | Consumed by | Required scope |
+| --- | --- | --- |
+| `GH_TOKEN` (or `GITHUB_TOKEN`) | `gh` | `repo` |
+| `GITLAB_TOKEN` | `glab` | `api` |
+
+No credential is ever read from `config.yaml`, and none is stored by this project. Export
+them from your secret manager instead of writing them to a file:
+
+```bash
+export GH_TOKEN="$(pass show github/pat)"
+export GITLAB_TOKEN="$(pass show gitlab/pat)"
+python sync.py --dry-run
+```
+
+## Verify the setup
+
+```bash
+gh auth status
+glab auth status
+
+cp config.example.yaml config.yaml
+python sync.py --dry-run --verbose
+```
+
+A dry run performs no writes. It resolves the repository list, reports which pairs it would
+touch, and surfaces authentication or permission problems immediately.
+
+:::caution[Verbose logging and tokens]
+`--verbose` enables DEBUG logging, and `cli_wrapper.run_command()` logs full command lines at
+that level. Because the GitLab mirror URL embeds a GitHub token, a DEBUG log redirected to a
+file can end up containing that token. Treat `sync.log` as a secret, or avoid `--verbose`
+when redirecting output. See [Mirroring & Scheduling](/gitlab-github-sync/guides/mirroring/).
+:::
+
+## A note on GitLab tiers
+
+Code sync uses GitLab's own mirroring:
+
+- **Push mirrors** (GitLab → GitHub) work on every tier, including Free.
+- **Pull mirrors** (GitHub → GitLab) require **Premium or higher**. Without them the run
+  still succeeds — it logs a warning and configures push-only code sync. If you need the
+  GitHub → GitLab direction on a Free tier, generate a GitHub Actions workflow instead; see
+  [Mirroring & Scheduling](/gitlab-github-sync/guides/mirroring/).

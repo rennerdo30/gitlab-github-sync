@@ -1,0 +1,62 @@
+# Local configuration (may contain private repository names)
+config.yaml
+config.yaml.local
+config.local.yaml
+
+# Sync state and scratch space
+.sync_state.json
+.sync_work/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / docs site
+node_modules/
+dist/
+build/
+.astro/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+cookies.txt
+
+# Logs
+*.log
+sync.log
+npm-debug.log*
+
+# Editors
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+._*
+Thumbs.db
+[Dd]esktop.ini
+
+# Local assistant/editor tooling config
+CLAUDE.md
+.claude/

@@ -1,0 +1,60 @@
+# GitLab-GitHub Sync — example configuration
+#
+# Copy this file to config.yaml and adjust it:
+#   cp config.example.yaml config.yaml
+#
+# config.yaml is git-ignored, because it typically contains the names of
+# private repositories. No credentials belong in this file — authentication is
+# handled entirely by the `gh` and `glab` CLIs (see the documentation).
+
+# Where the sync state and the issue/MR mappings are stored.
+state_file: .sync_state.json
+
+# Working directory reserved for git operations.
+work_dir: .sync_work
+
+sync_mode:
+  # true  -> auto-discover repositories on both platforms and match them by name
+  # false -> only sync the pairs listed under `repositories:` below
+  sync_all: true
+
+  # GitLab group or user namespace to read repositories from.
+  # null -> repositories owned by the authenticated user (`glab repo list --mine`)
+  gitlab_owner: null
+
+  # GitHub user or organization to read repositories from.
+  # null -> repositories of the authenticated user (`gh repo list`)
+  github_owner: null
+
+  # Create the counterpart repository when only one side exists.
+  # Requires gitlab_owner and/or github_owner to be set.
+  create_missing: false
+
+# Repositories to exclude. Matched with fnmatch against the full path, so
+# shell-style wildcards work. Both lists are applied to both platforms.
+blacklist:
+  gitlab:
+    # - "group/project-name"
+    # - "group/*-test"
+  github:
+    # - "username/repo-name"
+    # - "username/*-temp"
+
+# What to synchronize.
+sync_options:
+  metadata: true            # description, homepage URL, topics/tags
+  code: true                # branches, tags, commits
+  issues: true              # issues
+  mrs: true                 # merge requests <-> pull requests
+  use_native_mirrors: true  # sync code via GitLab remote mirrors (recommended)
+
+# Explicit repository pairs. Only used when sync_mode.sync_all is false.
+repositories:
+  # - gitlab: "group/project-name"
+  #   github: "username/repo-name"
+
+# Informational only — the tool does not schedule itself.
+# Use cron, systemd timers or CI to run it periodically.
+schedule:
+  # cron: "0 */6 * * *"
+  # interval_hours: 6

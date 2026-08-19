@@ -1,0 +1,120 @@
+---
+title: Architecture
+description: How sync.py, sync_engine.py, cli_wrapper.py and state_manager.py fit together, and what happens per repository pair.
+---
+
+## Modules
+
+```
+sync.py             CLI parsing, config loading, discovery, pairing, blacklist, progress bar
+ └── sync_engine.py   per-pair orchestration: metadata, code, issues, MRs/PRs
+      ├── cli_wrapper.py   thin wrappers around `gh` and `glab` subprocesses
+      └── state_manager.py JSON state: timestamps + number mappings
+setup_mirrors.py    standalone mirror setup / GitHub Actions workflow generator
+```
+
+| File | Responsibility |
+| --- | --- |
+| `sync.py` | Argument parsing, YAML loading and validation, repository discovery and name matching, blacklist filtering, the per-pair loop, the summary and the exit code |
+| `sync_engine.py` | `SyncEngine.sync_repository()` plus one method per area: `sync_metadata`, `sync_code`, `sync_issues`, `sync_mrs` |
+| `cli_wrapper.py` | One function per CLI operation. Builds an argument list, runs it via `subprocess.run`, parses JSON, raises `CLIError` on failure |
+| `state_manager.py` | Load/save `.sync_state.json`; record timestamps; store and look up issue and MR/PR number mappings |
+| `setup_mirrors.py` | Mirror configuration through `glab repo mirror`, and generation of `.github/workflows/sync-to-gitlab.yml` |
+
+## No API clients
+
+Every remote operation is a subprocess call to `gh` or `glab`. That is the central design
+decision, and it has consequences worth knowing:
+
+- **Authentication is free.** Whatever `gh`/`glab` are logged in as is what the tool uses.
+  Keyrings, SSO, self-managed hosts and token refresh are somebody else's problem.
+- **JSON shapes are the CLIs' shapes**, not the raw APIs'. GitHub gives
+  `nameWithOwner`/`homepageUrl`/`repositoryTopics`; GitLab gives
+  `path_with_namespace`/`web_url`/`topics`. The wrapper layer is where that asymmetry lives.
+- **Not everything has a JSON mode.** `gh issue create`, `gh pr create`, `glab issue create`
+  and `glab mr create` do not. The wrappers create the resource, recover its number from the
+  output the CLI prints, and then fetch it with the matching `view --json` call.
+- **Errors are strings.** `CLIError` carries the return code and stderr, and exposes an
+  `is_not_found` flag derived from looking for `404`/`not found` in stderr. Callers branch on
+  that to distinguish "skip this pair" from "this is a real failure".
+
+## Discovery and pairing
+
+With `--sync-all`, `discover_repositories()`:
+
+1. Lists GitLab projects — `--group`, falling back to `--user` if GitLab reports no matching
+   group, or `--mine` when no owner is configured.
+2. Lists GitHub repositories with `gh repo list [owner] --limit 1000`.
+3. Indexes the GitLab side by bare repository name (namespace stripped).
+4. Walks the GitHub side and pairs on name equality. When two GitLab projects share a name in
+   different namespaces, the **first** one wins.
+5. For unpaired repositories, either creates the counterpart (`create_missing`) or records the
+   mapping anyway so the pair is retried on a later run.
+
+Pairing is by name only. There is no fuzzy matching, no remote-URL inspection and no manual
+override beyond the explicit `repositories` list.
+
+## Per-pair flow
+
+`SyncEngine.sync_repository()` runs, in order:
+
+1. **Existence check** — `glab repo view` and `gh repo view`. If either fails as not-found,
+   the pair returns `None`, which the caller counts as *skipped* rather than an error.
+2. **Metadata** — reads both sides, then pushes GitLab → GitHub and immediately afterwards
+   GitHub → GitLab in the same pass. Topics are merged as a set union, so a topic present on
+   one side is added to the other but never removed. Because both directions run in one pass
+   over data read before either write, metadata sync is last-writer-wins with no conflict
+   detection.
+3. **Code** — see below.
+4. **Issues** — the state mapping decides between create and update.
+5. **MRs/PRs** — the same pattern, but a create needs `source_branch`/`headRefName` to exist
+   on the target platform, which in practice means code sync must have run first.
+
+Each area returns a boolean. If any returned `True`, the pair is a success and a `full`
+timestamp is recorded; if none did, the pair is logged as *no sync operations completed*.
+Each area also records its own timestamp, so a partial success remains visible in the state
+file.
+
+## Code sync via GitLab mirrors
+
+No git clone, fetch or push happens in this project. `work_dir` is created at start-up but
+the mirror-based code path does not use it. Instead `sync_code()`:
+
+1. Reads a GitHub token from `gh auth token` and builds
+   `https://<token>@github.com/<owner>/<repo>.git`.
+2. Resolves the numeric GitLab project ID with
+   `glab api projects/<url-encoded-path>` — the mirror endpoints need an ID, not a path.
+3. Configures the two directions, which are **two different GitLab APIs**:
+
+| Direction | Endpoint | Tier |
+| --- | --- | --- |
+| GitLab → GitHub (push) | `POST projects/:id/remote_mirrors` | Free and up |
+| GitHub → GitLab (pull) | `PUT projects/:id/mirror/pull` | Premium and up |
+
+The `remote_mirrors` endpoint is push-only; pull mirroring is a separate resource
+([push mirrors](https://docs.gitlab.com/api/remote_mirrors/),
+[pull mirroring](https://docs.gitlab.com/api/project_pull_mirroring/)). Both calls are
+idempotent in practice: GitLab answers a duplicate push mirror with "has already been taken",
+which is treated as success, and the pull endpoint is a `PUT`. A `403`/`404` on the pull
+endpoint is reported as "pull mirroring unavailable" and the run continues with push-only
+code sync.
+
+Once configured, GitLab keeps the code in sync on its own schedule. The tool does not need to
+run again for code — only for metadata, issues and MRs/PRs.
+
+## Logging
+
+`sync.py` installs a `TqdmLoggingHandler` on the root logger. While the progress bar is
+alive, the handler emits through `tqdm.write()`; otherwise it falls back to `print()`. The
+level is INFO, raised to DEBUG by `--verbose`.
+
+DEBUG level logs full command lines from `cli_wrapper.run_command()`. Since the mirror URL
+embeds a GitHub token, DEBUG output can contain that token — see
+[Mirroring & Scheduling](/gitlab-github-sync/guides/mirroring/).
+
+## Extending it
+
+Adding a synchronized area means: a wrapper function per platform in `cli_wrapper.py`, a
+`sync_<area>()` method on `SyncEngine` returning a boolean, a `sync_options` key, and — if the
+area has identifiers to correlate — a mapping namespace in `state_manager.py` alongside
+`issue_mappings` and `mr_mappings`.
